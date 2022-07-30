@@ -2,6 +2,7 @@
 *.json
 *.h5
 *.hdf5
+*.pt
 .DS_Store
 
 data/*/
