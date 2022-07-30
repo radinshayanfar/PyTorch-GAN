@@ -182,11 +182,14 @@ for epoch in range(opt.n_epochs):
         d_loss.backward()
         optimizer_D.step()
 
-        print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
-        )
+        if i == 0:
+            print(
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+            )
 
         batches_done = epoch * len(dataloader) + i
         if batches_done % opt.sample_interval == 0:
             save_image(gen_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+
+torch.save(generator.state_dict(), 'gen.pt')
