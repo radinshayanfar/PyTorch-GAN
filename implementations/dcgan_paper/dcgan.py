@@ -37,7 +37,7 @@ def weights_init_normal(m):
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find("BatchNorm2d") != -1:
+    elif classname.find("BatchNorm2d") != -1 and m.affine == True:  # No weights when using affine == False
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
 
@@ -52,12 +52,12 @@ class Generator(nn.Module):
         )
 
         self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(512),
+            nn.BatchNorm2d(512, affine=False),
             nn.ConvTranspose2d(in_channels=512, out_channels=256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(256, 0.8),
+            nn.BatchNorm2d(256, 0.8, affine=False),
             nn.ReLU(),
             nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128, 0.8),
+            nn.BatchNorm2d(128, 0.8, affine=False),
             nn.ReLU(),
             nn.ConvTranspose2d(in_channels=128, out_channels=opt.channels, kernel_size=4, stride=2, padding=1),
             nn.Tanh(),
@@ -80,7 +80,7 @@ class Discriminator(nn.Module):
                 nn.LeakyReLU(0.2),
             ]
             if bn:
-                block.append(nn.BatchNorm2d(out_filters, 0.8))
+                block.append(nn.BatchNorm2d(out_filters, 0.8, affine=False))
             return block
 
         self.model = nn.Sequential(
