@@ -145,6 +145,9 @@ if __name__ == '__main__':
     #  Training
     # ----------
 
+    mean_D_loss = 0
+    mean_G_loss = 0
+
     batches_done = 0
     for epoch in range(opt.n_epochs):
         for i, (imgs, _) in enumerate(tqdm(dataloader)):
@@ -172,6 +175,7 @@ if __name__ == '__main__':
             gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
             # Adversarial loss
             d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty
+            mean_D_loss += d_loss.item() / len(dataloader)
 
             d_loss.backward()
             optimizer_D.step()
@@ -191,19 +195,18 @@ if __name__ == '__main__':
                 # Train on fake images
                 fake_validity = discriminator(fake_imgs)
                 g_loss = -torch.mean(fake_validity)
+                mean_G_loss += g_loss.item() / (len(dataloader) // opt.n_critic)
 
                 g_loss.backward()
                 optimizer_G.step()
-
-                # if i == 0:
-                #     print(
-                #         "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                #         % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
-                #     )
 
                 if batches_done % opt.sample_interval == 0:
                     save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
 
                 batches_done += opt.n_critic
+        
+        print(f"[Epoch: {epoch+1}/{opt.n_epochs}], [D loss: {mean_D_loss}], [G loss: {mean_G_loss}]")
+        mean_G_loss = 0
+        mean_D_loss = 0
 
     torch.save(generator.state_dict(), 'gen.pt')

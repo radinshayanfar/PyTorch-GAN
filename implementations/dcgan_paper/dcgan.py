@@ -7,7 +7,6 @@ from tqdm import tqdm
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
-from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
 
@@ -150,6 +149,9 @@ if __name__ == "__main__":
     #  Training
     # ----------
 
+    mean_D_loss = 0
+    mean_G_loss = 0
+
     for epoch in range(opt.n_epochs):
         for i, (imgs, _) in enumerate(tqdm(dataloader)):
 
@@ -174,6 +176,7 @@ if __name__ == "__main__":
 
             # Loss measures generator's ability to fool the discriminator
             g_loss = adversarial_loss(discriminator(gen_imgs), valid)
+            mean_G_loss += g_loss.item() / len(dataloader)
 
             g_loss.backward()
             optimizer_G.step()
@@ -188,18 +191,17 @@ if __name__ == "__main__":
             real_loss = adversarial_loss(discriminator(real_imgs), valid)
             fake_loss = adversarial_loss(discriminator(gen_imgs.detach()), fake)
             d_loss = (real_loss + fake_loss) / 2
+            mean_D_loss += d_loss.item() / len(dataloader)
 
             d_loss.backward()
             optimizer_D.step()
 
-            # if i == 0:
-            #     print(
-            #         "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-            #         % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
-            #     )
-
             batches_done = epoch * len(dataloader) + i
             if batches_done % opt.sample_interval == 0:
                 save_image(gen_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+        
+        print(f"[Epoch: {epoch+1}/{opt.n_epochs}], [D loss: {mean_D_loss}], [G loss: {mean_G_loss}]")
+        mean_G_loss = 0
+        mean_D_loss = 0
 
     torch.save(generator.state_dict(), 'gen.pt')
