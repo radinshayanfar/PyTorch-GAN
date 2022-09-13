@@ -1,0 +1,223 @@
+import argparse
+import os
+import numpy as np
+import math
+import sys
+from tqdm import tqdm
+
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+
+from torch.utils.data import DataLoader
+from torchvision import datasets
+from torch.autograd import Variable
+
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.autograd as autograd
+import torch
+
+
+class Generator(nn.Module):
+    def __init__(self, img_shape=(1, 28, 28), latent_dim=128):
+        super(Generator, self).__init__()
+        self.img_shape = img_shape
+
+        self.model = nn.Sequential(
+            nn.ConvTranspose2d(latent_dim, 512, kernel_size=3, stride=2, padding=0),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=1, padding=0),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=0),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(128, 1, kernel_size=4, stride=2, padding=0),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z):
+        x = z.reshape(-1, z.shape[1], 1, 1)
+        return self.model(x)
+
+
+class Discriminator(nn.Module):
+    def __init__(self, img_shape=(1, 28, 28)):
+        super(Discriminator, self).__init__()
+
+        self.model = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=4, stride=2, padding=2),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=0),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(256, 1, kernel_size=3, stride=1, padding=0),
+        )
+
+    def forward(self, img):
+        x = self.model(img)
+        return x.reshape(-1, 1)
+
+
+if __name__ == '__main__':
+    os.makedirs("images", exist_ok=True)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
+    parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+    parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+    parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--latent_dim", type=int, default=128, help="dimensionality of the latent space")
+    parser.add_argument("--img_size", type=int, default=28, help="size of each image dimension")
+    parser.add_argument("--channels", type=int, default=1, help="number of image channels")
+    parser.add_argument("--n_critic", type=int, default=2, help="number of training steps for discriminator per iter")
+    parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
+    opt = parser.parse_args()
+    print(opt)
+
+    img_shape = (opt.channels, opt.img_size, opt.img_size)
+
+    cuda = True if torch.cuda.is_available() else False
+
+    # Loss weight for gradient penalty
+    lambda_gp = 10
+
+    # Initialize generator and discriminator
+    generator = Generator(img_shape, opt.latent_dim)
+    discriminator = Discriminator(img_shape)
+
+    if cuda:
+        generator.cuda()
+        discriminator.cuda()
+
+    # Configure data loader
+    os.makedirs("../../data/mnist", exist_ok=True)
+    dataloader = torch.utils.data.DataLoader(
+        datasets.MNIST(
+            "../../data/mnist",
+            train=True,
+            download=True,
+            transform=transforms.Compose(
+                [
+                    transforms.Resize(opt.img_size),
+                    transforms.ToTensor(),
+                    # rescaling to sigmoid range
+                    transforms.Lambda(lambda x: (x - (x_min := x.min())) / (x.max() - x_min)),
+                ]
+            ),
+        ),
+        batch_size=opt.batch_size,
+        shuffle=True,
+    )
+
+    # Optimizers
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+    Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+
+
+    def compute_gradient_penalty(D, real_samples, fake_samples):
+        """Calculates the gradient penalty loss for WGAN GP"""
+        # Random weight term for interpolation between real and fake samples
+        alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
+        # Get random interpolation between real and fake samples
+        interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
+        d_interpolates = D(interpolates)
+        fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
+        # Get gradient w.r.t. interpolates
+        gradients = autograd.grad(
+            outputs=d_interpolates,
+            inputs=interpolates,
+            grad_outputs=fake,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gradient_penalty
+
+
+    # ----------
+    #  Training
+    # ----------
+
+    mean_D_loss = 0
+    mean_G_loss = 0
+
+    batches_done = 0
+    for epoch in range(opt.n_epochs):
+        for i, (imgs, _) in enumerate(tqdm(dataloader)):
+
+            # Configure input
+            real_imgs = Variable(imgs.type(Tensor))
+
+            # ---------------------
+            #  Train Discriminator
+            # ---------------------
+
+            optimizer_D.zero_grad()
+
+            # Sample noise as generator input
+            z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
+
+            # Generate a batch of images
+            fake_imgs = generator(z)
+
+            # Real images
+            real_validity = discriminator(real_imgs)
+            # Fake images
+            fake_validity = discriminator(fake_imgs)
+            # Gradient penalty
+            gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
+            # Adversarial loss
+            d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty
+            mean_D_loss += d_loss.item() / len(dataloader)
+
+            d_loss.backward()
+            optimizer_D.step()
+
+            optimizer_G.zero_grad()
+
+            # Train the generator every n_critic steps
+            if i % opt.n_critic == 0:
+
+                # -----------------
+                #  Train Generator
+                # -----------------
+
+                # Generate a batch of images
+                fake_imgs = generator(z)
+                # Loss measures generator's ability to fool the discriminator
+                # Train on fake images
+                fake_validity = discriminator(fake_imgs)
+                g_loss = -torch.mean(fake_validity)
+                mean_G_loss += g_loss.item() / (len(dataloader) // opt.n_critic)
+
+                g_loss.backward()
+                optimizer_G.step()
+
+                if batches_done % opt.sample_interval == 0:
+                    save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+
+                batches_done += opt.n_critic
+        
+        print(f"[Epoch: {epoch+1}/{opt.n_epochs}], [D loss: {mean_D_loss}], [G loss: {mean_G_loss}]")
+        mean_G_loss = 0
+        mean_D_loss = 0
+
+    torch.save(generator.state_dict(), 'gen.pt')
